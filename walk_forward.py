@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a short forward command using the A3 Ultra walking interface."""
+"""Send a short walking or turning command through the A3 Ultra controller."""
 
 import argparse
 import json
@@ -14,13 +14,13 @@ TOPIC = (
 CONTROLLER = "aimrt_motion_control_node"
 
 
-def make_command(wrapper_type, scale):
+def make_command(wrapper_type, forward, angular=0.0):
     payload = {
         "data": {
             "mode": "MotionControl_LocomotionMode_DEFAULT",
-            "forward_velocity": scale,
+            "forward_velocity": forward,
             "lateral_velocity": 0.0,
-            "angular_velocity": 0.0,
+            "angular_velocity": angular,
         },
     }
     wire_data = json.dumps(payload).encode("utf-8")
@@ -32,16 +32,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="discover the controller")
-    mode.add_argument("--execute", action="store_true", help="send a walking command")
+    mode.add_argument("--execute", action="store_true", help="send a movement command")
+    parser.add_argument("--direction", choices=("forward", "backward", "left", "right"),
+                        default="forward", help="walk forward/backward or turn left/right")
     parser.add_argument("--scale", type=float, default=0.10,
-                        help="normalized forward input (default and maximum 0.10)")
+                        help="normalized movement input (default and maximum 0.10)")
     parser.add_argument("--duration", type=float, default=1.0,
-                        help="seconds to command forward motion (maximum 1)")
+                        help="seconds to command movement (maximum 1)")
     args = parser.parse_args()
     if not 0 < args.scale <= 0.10 or not 0 < args.duration <= 1.0:
         parser.error("use 0 < scale <= 0.10 and 0 < duration <= 1 second")
+    forward, angular = {
+        "forward": (args.scale, 0.0),
+        "backward": (-args.scale, 0.0),
+        "left": (0.0, args.scale),
+        "right": (0.0, -args.scale),
+    }[args.direction]
     if not args.check:
-        print(f"Forward scale {args.scale:g} for {args.duration:g} seconds", flush=True)
+        print(f"{args.direction}: forward={forward:g}, angular={angular:g} "
+              f"for {args.duration:g} seconds", flush=True)
     if not (args.check or args.execute):
         return 0
 
@@ -96,7 +105,7 @@ def main():
         if args.check:
             return 0
 
-        command = make_command(RosMsgWrapper, args.scale)
+        command = make_command(RosMsgWrapper, forward, angular)
         stop = make_command(RosMsgWrapper, 0.0)
         deadline = time.monotonic() + args.duration
         try:
