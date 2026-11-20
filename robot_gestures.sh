@@ -50,6 +50,15 @@ case "$GESTURE" in
   watch)
     MOTION_ID='/agibot/data/resources/default/motion/看看手表/kanbiao_Skeleton0_ta.mcap'
     ;;
+  look_left)
+    MOTION_ID='/agibot/data/resources/default/motion/向左看看/wbc.mcap'
+    ;;
+  look_right)
+    MOTION_ID='/agibot/data/resources/default/motion/向右看看/wbc.mcap'
+    ;;
+  look_around)
+    MOTION_ID='/agibot/data/resources/default/motion/灵动待机/四处看看/sichukankan_Skeleton1.mcap'
+    ;;
   list|--help|-h)
     cat <<'EOF'
 Usage: ROBOT=10.42.10.12 ./robot_gestures.sh GESTURE [duration-ms] [--execute]
@@ -65,6 +74,9 @@ Available gestures:
   fist_bump_left     left-side fist bump
   fist_bump_right    right-side fist bump
   watch              look-at-watch gesture
+  look_left          upper-body look-left gesture
+  look_right         upper-body look-right gesture
+  look_around        upper-body look-around gesture
 
 Without --execute, this only previews the selected motion.
 EOF
