@@ -44,6 +44,7 @@ while true; do
   printf '  7  Inspect a ROS node\n'
   printf '  q  Quit\n\n'
 
+  printf '  8  Live LiDAR\n\n'
   read -rp 'Select a view: ' choice || break
   case "$choice" in
     1)
@@ -76,8 +77,12 @@ while true; do
         printf 'Enter a full node name beginning with /.\n'
       fi
       ;;
+    8) python3 "$HOME/robot_lidar_view.py" ;;
+    8) python3 "$HOME/robot_lidar_view.py" ;;
+    8) python3 "$HOME/robot_lidar_view.py" ;;
+    8) python3 "$HOME/robot_lidar_view.py" ;;
     q|Q) break ;;
-    *) printf 'Choose 1–7 or q.\n' ;;
+    *) printf 'Choose 1–8 or q.\n' ;;
   esac
   pause
 done
