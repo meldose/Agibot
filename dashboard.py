@@ -14,6 +14,8 @@ import time
 import tty
 
 from robot_dashboard import Telemetry
+from robot_dashboard_recording import recent_tests, save_test
+from robot_dashboard_status import TOPICS, health_lines, status_callback
 
 
 class Feed:
@@ -46,8 +48,11 @@ class WalkingTest:
         self.baseline = None
         self.latest = None
         self.peak = None
-        self.events = deque(maxlen=8)
-        self.seen_events = deque(maxlen=64)
+        self.odometry = []
+        self.joints = []
+        self.events = []
+        self.seen_events = set()
+        self.saved = None
         self.message = ""
 
     def start(self, snapshot):
@@ -60,6 +65,7 @@ class WalkingTest:
         self.started = now
         self.baseline = samples[-1]
         self.latest = self.baseline
+        self.odometry.append(self.baseline)
 
     def update(self, snapshot):
         if self.started is None:
@@ -70,20 +76,31 @@ class WalkingTest:
         for event in reversed(snapshot["events"]):
             if start_text <= event[:19] <= end_text and event not in self.seen_events:
                 self.events.append(event)
-                self.seen_events.append(event)
+                self.seen_events.add(event)
         if self.stopped is not None:
             return
+        last_joint = self.joints[-1]["t"] if self.joints else self.started
+        self.joints.extend(sample for sample in snapshot["joints"] if last_joint < sample["t"])
         for sample in snapshot["odometry"]:
             if sample["t"] < self.started or sample["t"] <= self.latest["t"]:
                 continue
             if sample["frame"] != self.baseline["frame"] or sample["t"] - self.latest["t"] > 3:
                 self.message = "Test ended early because the odometry frame changed or data dropped out."
                 self.stopped = self.latest["t"] if self.latest["t"] >= self.started else self.started
+                self.joints = [row for row in self.joints if row["t"] <= self.stopped]
                 return
             self.latest = sample
+            self.odometry.append(sample)
             self.peak = max(self.peak or 0, sample["speed"])
+        if end - self.started >= 1800:
+            self.stopped = end
+            self.message = "Test reached the 30-minute recording limit."
 
     def stop(self, snapshot):
+        if self.saved is False:
+            self.saved = None
+            self.message = ""
+            return
         if self.started is None or self.stopped is not None:
             self.message = "Press S to start a test."
             return
@@ -93,6 +110,14 @@ class WalkingTest:
             if self.stopped - self.latest["t"] > 3:
                 self.message = "Odometry was stale at the end. Summary uses the last received sample."
 
+    def summary(self):
+        if self.peak is None:
+            return "No odometry samples received during the test"
+        dx = (self.latest["x"] - self.baseline["x"]) * 100
+        dy = (self.latest["y"] - self.baseline["y"]) * 100
+        return (f"ΔX {dx:+.2f} cm   ΔY {dy:+.2f} cm   "
+                f"Net {math.hypot(dx, dy):.2f} cm   Sampled peak {self.peak:.3f} m/s")
+
     def lines(self, now):
         lines = ["", "Walking test"]
         if self.started is None:
@@ -101,19 +126,31 @@ class WalkingTest:
             end = self.stopped if self.stopped is not None else now
             status = "Complete" if self.stopped is not None else "Recording"
             lines.append(f"  {status} · {end - self.started:.1f} s · frame {self.baseline['frame']}")
-            if self.peak is None:
-                lines.append("  No odometry samples received during the test")
-            else:
-                dx = (self.latest["x"] - self.baseline["x"]) * 100
-                dy = (self.latest["y"] - self.baseline["y"]) * 100
-                lines.append(f"  ΔX {dx:+.2f} cm   ΔY {dy:+.2f} cm   "
-                             f"Net {math.hypot(dx, dy):.2f} cm   Sampled peak {self.peak:.3f} m/s")
-            lines.extend(f"  {event}" for event in reversed(self.events))
+            lines.append("  " + self.summary())
+            if self.saved:
+                lines.append(f"  Saved {self.saved}")
+            lines.extend(f"  {event}" for event in reversed(self.events[-5:]))
             if not self.events:
                 lines.append("  No matching controller events in the log tail")
         if self.message:
             lines.append(f"  {self.message}")
         return lines
+
+
+def sparkline(samples, now, value):
+    bins = [None] * 30
+    for sample in samples:
+        age = now - sample["t"]
+        reading = value(sample)
+        if reading is not None and 0 <= age < 30:
+            bins[29 - int(age)] = reading
+    values = [value for value in bins if value is not None]
+    if not values:
+        return "Waiting for samples"
+    lo, hi = min(values), max(values)
+    bars = "▁▂▃▄▅▆▇█"
+    return "".join("·" if value is None else bars[round(7 * (value - lo) / (hi - lo))]
+                   if hi > lo else "▄" for value in bins)
 
 
 def render(snapshot, walking_test, interactive):
@@ -133,12 +170,25 @@ def render(snapshot, walking_test, interactive):
     lines.extend(["", "Leg joint angles", "  " + snapshot["joint_status"]])
     if joints:
         sample = joints[-1]
-        lines.extend(f"  {name:<28} {angle:+.3f} rad"
-                     for name, angle in sorted(sample["angles"].items()))
+        angles = [f"{name} {angle:+.3f} rad" for name, angle in sorted(sample["angles"].items())]
+        lines.extend("  " + "   ".join(angles[index:index + 2])
+                     for index in range(0, len(angles), 2))
+
+    lines.extend(["", "Trends · last 30 seconds", f"  Speed   {sparkline(odometry, now, lambda row: row['speed'])}"])
+    names = sorted(joints[-1]["angles"]) if joints else []
+    knees = [name for name in names if "knee" in name.lower()]
+    for name in knees[:2] or names[:1]:
+        trend = sparkline(joints, now, lambda row: row["angles"].get(name))
+        lines.append(f"  {name}   {trend}")
+
+    lines.extend(["", "Robot status", *snapshot["robot_status"]])
+    lines.extend(["", "Health", *snapshot["health"]])
 
     if interactive:
         lines.extend(walking_test.lines(now))
         lines.append("  S start or restart · E end · Q quit")
+        if snapshot["past_tests"]:
+            lines.extend(["", "Recent saved tests", *snapshot["past_tests"]])
 
     lines.extend(["", "Controller events (MDU local time)"])
     if snapshot["log"]:
@@ -156,6 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log-dir", type=Path, default=Path("/agibot/log/mc"))
     parser.add_argument("--domain", type=int, default=232, help="ROS domain ID (default: 232)")
+    parser.add_argument("--output-dir", type=Path, default=Path("/agibot/dashboard_tests"))
     parser.add_argument("--once", action="store_true", help="print one snapshot and exit")
     args = parser.parse_args()
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
@@ -175,6 +226,7 @@ def main():
     odom_feed = Feed(telemetry.on_odometry)
     joint_feed = Feed(telemetry.on_joints)
     walking_test = WalkingTest()
+    robot_status = {}
     rclpy.init()
     node = None
     interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.once
@@ -192,6 +244,17 @@ def main():
             JointState, "/motion/control/leg_joint_state",
             joint_feed.receive, qos_profile_sensor_data,
         )
+        subscriptions = {}
+        try:
+            from ros2_plugin_proto.msg import RosMsgWrapper
+            for kind, topic in TOPICS.items():
+                subscriptions[kind] = node.create_subscription(
+                    RosMsgWrapper, topic, status_callback(robot_status, kind), qos_profile_sensor_data,
+                )
+        except (ImportError, RuntimeError) as exc:
+            status_error = f"AimRT message support unavailable ({exc})"
+        else:
+            status_error = None
         next_refresh = time.monotonic() + (3 if args.once else 0)
         while rclpy.ok():
             key = b""
@@ -214,11 +277,28 @@ def main():
                 next(iter(snapshot["joints"][-1:]), None), now,
                 joint_subscription.get_publisher_count(),
             )
+            snapshot["robot_status"] = [f"  {status_error}"] if status_error else []
+            for kind, subscription in subscriptions.items():
+                if kind in robot_status:
+                    stamp, value = robot_status[kind]
+                    age = time.monotonic() - stamp
+                    state = f"{value} · {age:.1f} s old" + (" (stale)" if age > 3 else "")
+                else:
+                    state = f"Waiting · {subscription.get_publisher_count()} matched"
+                snapshot["robot_status"].append(f"  {kind} · {state}")
+            snapshot["health"] = health_lines()
             if key == b"s":
                 walking_test.start(snapshot)
             elif key == b"e":
                 walking_test.stop(snapshot)
             walking_test.update(snapshot)
+            if walking_test.stopped is not None and walking_test.saved is None:
+                try:
+                    walking_test.saved = save_test(args.output_dir, walking_test, walking_test.summary())
+                except OSError as exc:
+                    walking_test.message = f"Save failed: {exc}. Press E to retry."
+                    walking_test.saved = False
+            snapshot["past_tests"] = recent_tests(args.output_dir)
             print(prefix + render(snapshot, walking_test, interactive), flush=True)
             if args.once:
                 break
