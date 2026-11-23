@@ -1,88 +1,95 @@
 #!/usr/bin/env bash
+# Consolidated AgiBot dashboard
 
 unset ROS_LOCALHOST_ONLY
-export ROS_DOMAIN_ID=232
-export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+export ROS_DOMAIN_ID=232 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 
 adu=${ROBOT_ADU_IP:-10.42.10.11}
-map_url="http://$adu:50807/rpc/aimdk.protocol.MappingService"
-nav_url="http://$adu:53176/rpc/aimdk.protocol.PncService"
-
-section() {
-  printf '\n\033[1;36m%s\033[0m\n' "$1"
-}
+details="$HOME/robot_dashboard_details.sh"
+plus="$HOME/robot_dashboard_plus.sh"
 
 query() {
-  curl -fsS --max-time 4 \
-    -H 'Content-Type: application/json' \
-    --data "$2" "$1" || printf 'Query unavailable'
+  curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+    --data "$2" "http://$adu:$1"
   printf '\n'
 }
 
-ros() {
-  timeout 10s ros2 "$@" || printf 'ROS query failed or timed out.\n'
+pose() {
+  local output
+  output=$(timeout 6s ros2 run tf2_ros tf2_echo map base_link 2>&1)
+  if grep -q 'Translation:' <<< "$output"; then
+    printf 'Map pose available\n'
+    grep -m1 'Translation:' <<< "$output"
+  elif grep -qiE 'waiting for transform|invalid frame' <<< "$output"; then
+    printf 'Map pose unavailable during the six-second check\n'
+  else
+    printf 'Map pose check failed\n%s\n' "$output"
+  fi
 }
 
-pause() {
-  printf '\nPress Enter to return to the menu. '
-  read -r _
-}
+live_camera() (
+  if ! command -v ffmpeg >/dev/null; then
+    echo 'Live preview needs ffmpeg. Saved camera clips are still available.'
+    return 1
+  fi
+  overlay="$HOME/foxglove_camera_ws/install/local_setup.bash"
+  profile=/agibot/software/v0/entry/cfg/ros_dds_configuration.xml
+  [[ -r "$overlay" && -r "$profile" ]] || {
+    echo 'Missing the Foxglove message overlay or camera DDS profile.'
+    return 1
+  }
+  source "$overlay" || return
+  unset ROS_AUTOMATIC_DISCOVERY_RANGE
+  export ROS_LOCALHOST_ONLY=0 FASTRTPS_DEFAULT_PROFILES_FILE="$profile"
+  python3 "$HOME/robot_live_camera.py" "${ROBOT_CAMERA_BIND_IP:-192.168.2.198}"
+)
 
 while true; do
-  printf '\033[H\033[2J'
-  printf '\033[1mAGIBOT ROBOT DASHBOARD\033[0m\n'
-  printf 'Host %s  |  ADU %s  |  ROS domain %s\n' \
-    "$(hostname)" "$adu" "$ROS_DOMAIN_ID"
-
-  printf '\n'
-  printf '  1  Navigation status and active map\n'
-  printf '  2  Localization and map transform\n'
-  printf '  3  Base motion topic connections\n'
-  printf '  4  All ROS topics and types\n'
-  printf '  5  All ROS nodes\n'
-  printf '  6  All ROS services and types\n'
-  printf '  7  Inspect a ROS node\n'
-  printf '  q  Quit\n\n'
-
-  printf '  8  Live LiDAR\n\n'
+  printf '\033[2J\033[HAGIBOT DASHBOARD\nHost %s | ADU %s\n\n' "$(hostname)" "$adu"
+  printf '  1  Overview\n  2  Sensors\n  3  Navigation\n  4  Advanced\n  q  Quit\n\n'
   read -rp 'Select a view: ' choice || break
   case "$choice" in
     1)
-      section 'Latest navigation task'
-      query "$nav_url/ActionGetState" '{"task_id":0}'
-      section 'Active map'
-      query "$map_url/GetCurrentWorkingMap" \
-        '{"command":"MappingCommand_GET_CURRENT_WORKING_MAP"}'
+      printf '\n=== Latest navigation task ===\n'
+      query '53176/rpc/aimdk.protocol.PncService/ActionGetState' '{"task_id":0}'
+      printf '\n=== Localization ===\n'
+      pose
+      printf '\n=== Sensor status ===\n'
+      bash "$plus" sensors
+      bash "$details" computer
       ;;
     2)
-      section 'Localization topic endpoints'
-      ros topic info /slam/localization/odometry --verbose --no-daemon
-      section 'Map to base_link transform (up to 8 seconds)'
-      timeout 8s ros2 run tf2_ros tf2_echo map base_link
+      printf '\n  1  Live LiDAR\n  2  Live front-left camera on port 8000\n'
+      printf '  3  Capture a camera clip or snapshot\n  4  Play the latest saved clip\n'
+      printf '  5  Measure sensor rates\n  6  Back\n'
+      read -rp 'Select a sensor view: ' sensor || break
+      case "$sensor" in
+        1) python3 "$HOME/robot_lidar_view.py" ;;
+        2) live_camera ;;
+        3) bash "$details" camera ;;
+        4) bash "$plus" browser ;;
+        5) bash "$plus" sensors ;;
+        6) continue ;;
+      esac
       ;;
     3)
-      for topic in /cmd_vel_dbg_in /cmd_vel /cmd_vel_final; do
-        section "$topic"
-        ros topic info "$topic" --verbose --no-daemon
-      done
+      printf '\n=== Active map ===\n'
+      query '50807/rpc/aimdk.protocol.MappingService/GetCurrentWorkingMap' \
+        '{"command":"MappingCommand_GET_CURRENT_WORKING_MAP"}'
+      pose
+      bash "$details" motion
+      printf '\n  1  ADU map files and localization logs\n'
+      printf '  2  Recent navigation failures\n  3  Back\n'
+      read -rp 'Select navigation details: ' nav || break
+      case "$nav" in
+        1) bash "$plus" localization ;;
+        2) bash "$plus" motion ;;
+        3) continue ;;
+      esac
       ;;
-    4) ros topic list -t --no-daemon ;;
-    5) ros node list --no-daemon ;;
-    6) ros service list -t --no-daemon ;;
-    7)
-      read -rp 'Node name, for example /vectorflux_a2_main_node: ' node
-      if [[ "$node" == /* ]]; then
-        ros node info "$node" --no-daemon
-      else
-        printf 'Enter a full node name beginning with /.\n'
-      fi
-      ;;
-    8) python3 "$HOME/robot_lidar_view.py" ;;
-    8) python3 "$HOME/robot_lidar_view.py" ;;
-    8) python3 "$HOME/robot_lidar_view.py" ;;
-    8) python3 "$HOME/robot_lidar_view.py" ;;
+    4) bash "$HOME/robot_dashboard_advanced.sh"; continue ;;
     q|Q) break ;;
-    *) printf 'Choose 1–8 or q.\n' ;;
+    *) echo 'Choose 1–4 or q.' ;;
   esac
-  pause
+  read -rp 'Press Enter to return to the menu. ' _ || break
 done
