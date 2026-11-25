@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn the A3 Ultra in place by 90 degrees using legged odometry."""
+"""Turn the A3 Ultra in place by a specified angle using legged odometry."""
 
 import argparse
 import math
@@ -10,7 +10,6 @@ import time
 from walk_forward import CONTROLLER, TOPIC, load_ros_environment, make_command
 
 ODOMETRY = "/legged_odometry_node/legged_odometry"
-TARGET = math.pi / 2
 PERIOD = 0.05
 
 
@@ -26,8 +25,14 @@ def yaw_from_quaternion(q):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("direction", choices=("left", "right"))
+    parser.add_argument("--degrees", type=float, default=90.0,
+                        help="relative turn angle in degrees (5 to 180, default 90)")
     parser.add_argument("--execute", action="store_true", help="send angular commands")
     args = parser.parse_args()
+    if not 5 <= args.degrees <= 180:
+        parser.error("--degrees must be between 5 and 180")
+    target = math.radians(args.degrees)
+    timeout = max(10.0, args.degrees / 2)
     load_ros_environment(__file__)
 
     os.environ.pop("ROS_LOCALHOST_ONLY", None)
@@ -98,7 +103,8 @@ def main():
         if interrupted:
             return 130
 
-        print(f"Heading: {math.degrees(last_yaw):+.1f}°. Target: 90° {args.direction}.", flush=True)
+        print(f"Heading: {math.degrees(last_yaw):+.1f}°. "
+              f"Target: {args.degrees:g}° {args.direction}.", flush=True)
         if publisher is None:
             print("Preview only. No command sent.")
             return 0
@@ -122,7 +128,7 @@ def main():
                 if invalid_jump or now - last_received > 0.4:
                     reason = "Odometry stopped updating or jumped."
                     break
-                if progress >= TARGET - math.radians(1):
+                if progress >= target - math.radians(1):
                     reason = "Reached the turn threshold."
                     break
                 if progress < -math.radians(5):
@@ -130,11 +136,11 @@ def main():
                     break
                 if progress >= progress_mark + math.radians(2):
                     progress_mark, progress_time = progress, now
-                if now - progress_time > 4 or now - start > 45:
+                if now - progress_time > 4 or now - start > timeout:
                     reason = "Turn stalled or timed out."
                     break
                 if now >= next_command:
-                    speed = 0.05 if TARGET - progress < math.radians(6) else 0.10
+                    speed = 0.05 if target - progress < min(target / 2, math.radians(6)) else 0.10
                     publisher.publish(commands[speed])
                     next_command = now + PERIOD
                 rclpy.spin_once(node, timeout_sec=max(0.0, next_command - time.monotonic()))
@@ -145,11 +151,13 @@ def main():
                 while (remaining := end - time.monotonic()) > 0:
                     rclpy.spin_once(node, timeout_sec=remaining)
 
-        print(f"{reason} Measured turn after stop commands: {math.degrees(angle * direction):.1f}°.")
+        measured = math.degrees(angle * direction)
+        print(f"{reason} Measured turn after stop commands: {measured:.1f}° "
+              f"(target {args.degrees:g}°).")
         if interrupted:
             return 130
         return 0 if (reason == "Reached the turn threshold." and not invalid_jump
-                     and abs(angle * direction - TARGET) <= math.radians(3)) else 1
+                     and abs(measured - args.degrees) <= 3) else 1
     finally:
         if node is not None:
             node.destroy_node()
