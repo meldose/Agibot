@@ -26,13 +26,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("direction", choices=("left", "right"))
     parser.add_argument("--degrees", type=float, default=90.0,
-                        help="relative turn angle in degrees (5 to 180, default 90)")
+                        help="relative angle, 5° to 180° in magnitude (negative reverses direction)")
     parser.add_argument("--execute", action="store_true", help="send angular commands")
     args = parser.parse_args()
-    if not 5 <= args.degrees <= 180:
-        parser.error("--degrees must be between 5 and 180")
-    target = math.radians(args.degrees)
-    timeout = max(10.0, args.degrees / 2)
+    degrees = abs(args.degrees)
+    if not 5 <= degrees <= 180:
+        parser.error("--degrees must have a magnitude between 5 and 180")
+    direction = 1 if args.direction == "left" else -1
+    if args.degrees < 0:
+        direction = -direction
+    turn_side = "left" if direction > 0 else "right"
+    target = math.radians(degrees)
+    timeout = max(10.0, degrees / 2)
     load_ros_environment(__file__)
 
     os.environ.pop("ROS_LOCALHOST_ONLY", None)
@@ -47,7 +52,6 @@ def main():
     from rclpy.signals import SignalHandlerOptions
     from ros2_plugin_proto.msg import RosMsgWrapper
 
-    direction = 1 if args.direction == "left" else -1
     interrupted = False
 
     def request_stop(_signum, _frame):
@@ -104,7 +108,7 @@ def main():
             return 130
 
         print(f"Heading: {math.degrees(last_yaw):+.1f}°. "
-              f"Target: {args.degrees:g}° {args.direction}.", flush=True)
+              f"Target: {degrees:g}° {turn_side}.", flush=True)
         if publisher is None:
             print("Preview only. No command sent.")
             return 0
@@ -153,11 +157,11 @@ def main():
 
         measured = math.degrees(angle * direction)
         print(f"{reason} Measured turn after stop commands: {measured:.1f}° "
-              f"(target {args.degrees:g}°).")
+              f"(target {degrees:g}° {turn_side}).")
         if interrupted:
             return 130
         return 0 if (reason == "Reached the turn threshold." and not invalid_jump
-                     and abs(measured - args.degrees) <= 3) else 1
+                     and abs(measured - degrees) <= 3) else 1
     finally:
         if node is not None:
             node.destroy_node()
