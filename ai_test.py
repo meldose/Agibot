@@ -35,6 +35,13 @@ def say_hello():
 
 
 GESTURES = {
+    "both thumbs up": ("BOTH_THUMBS_UP", "双手点赞/20260728_163231_ta.mcap", 9625),
+    "say cheese": ("SAY_CHEESE", "右手比耶/danshouqiezi_Skeleton0_ta.mcap", 3750),
+    "cheer": ("CHEER", "右手加油/jiayou-R_Skeleton0_ta.mcap", 3584),
+    "check watch": ("CHECK_WATCH", "看看手表/kanbiao_Skeleton0_ta.mcap", 8000),
+    "look left": ("LOOK_LEFT", "向左看看/wbc.mcap", 5500),
+    "look right": ("LOOK_RIGHT", "向右看看/wbc.mcap", 5500),
+    "thanks": ("THANKS", "谢谢夸奖/wbc.mcap", 4000),
     "wave hand": ("WAVE_HAND", "右手挥手/huishou_Skeleton0.mcap", 13050),
     "thumbs up": ("THUMBS_UP", "右手点赞/danshoudianzan_Skeleton0_ta.mcap", 6800),
     "finger heart": ("FINGER_HEART", "手指比心/手指比心_ta.mcap", 6709),
